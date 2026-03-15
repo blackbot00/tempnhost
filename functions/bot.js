@@ -2,87 +2,81 @@ const { Telegraf } = require('telegraf');
 const axios = require('axios');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const API_URL = 'https://api.mail.tm';
 
-// --- BOT LOGIC ---
+// 1secmail direct API endpoints
+const API_URL = 'https://www.1secmail.com/api/v1/';
+
+const botConfig = {
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+  },
+  timeout: 10000 // 10 seconds timeout
+};
 
 bot.start((ctx) => {
-  ctx.reply("✨ *Quick Gmail Bot (Mail.tm Edition)* \n\nUse /generate to get a high-speed temp mail.", { parse_mode: 'Markdown' });
+  ctx.reply("🔥 *Quick Gmail Bot is Ready!* \n\nGet unlimited temp mails instantly.", { parse_mode: 'Markdown' });
 });
 
 bot.command('generate', async (ctx) => {
   try {
-    // 1. Get Domain
-    const domainRes = await axios.get(`${API_URL}/domains`);
-    const domain = domainRes.data['hydra:member'][0].domain;
-
-    // 2. Create Random Email and Password
-    const login = Math.random().toString(36).substring(2, 10);
-    const password = Math.random().toString(36).substring(2, 12);
+    // Domain list
+    const domains = ["1secmail.com", "1secmail.net", "1secmail.org"];
+    const domain = domains[Math.floor(Math.random() * domains.length)];
+    const login = Math.random().toString(36).substring(2, 12); // longer login
     const email = `${login}@${domain}`;
 
-    // 3. Register the Account on Mail.tm
-    await axios.post(`${API_URL}/accounts`, { address: email, password: password });
-
-    // 4. Get Token (Login)
-    const tokenRes = await axios.post(`${API_URL}/token`, { address: email, password: password });
-    const token = tokenRes.data.token;
-
-    ctx.reply(`📧 *Your Temp Mail:* \n\`${email}\` \n\n_Click the button below to check your inbox._`, {
+    await ctx.reply(`📧 *Your Temp Mail:* \n\`${email}\` \n\n_Send your mail and click the button below._`, {
       parse_mode: 'Markdown',
       reply_markup: {
-        inline_keyboard: [[{ text: "📥 Check Inbox", callback_data: `check_${token}` }]]
+        inline_keyboard: [[{ text: "📥 Check Inbox", callback_data: `chk_${email}` }]]
       }
     });
-  } catch (error) {
-    console.error(error);
-    ctx.reply("⚠️ Error generating mail. Please try again.");
+  } catch (err) {
+    ctx.reply("❌ Error generating email. Try again.");
   }
 });
 
 bot.on('callback_query', async (ctx) => {
-  const token = ctx.callbackQuery.data.split('_')[1];
+  const data = ctx.callbackQuery.data;
+  if (!data.startsWith('chk_')) return;
+
+  const email = data.replace('chk_', '');
+  const [login, domain] = email.split('@');
 
   try {
-    // 1. Fetch Messages using the Token
-    const res = await axios.get(`${API_URL}/messages`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-
-    const messages = res.data['hydra:member'];
-
-    if (messages.length === 0) {
-      return ctx.answerCbQuery("❌ Inbox is empty!", { show_alert: true });
+    // 1. Get Messages
+    const res = await axios.get(`${API_URL}?action=getMessages&login=${login}&domain=${domain}`, botConfig);
+    
+    if (!res.data || res.data.length === 0) {
+      return ctx.answerCbQuery("📭 Inbox is empty! Wait a bit.", { show_alert: true });
     }
 
-    // 2. Get the latest message content
-    const msgId = messages[0].id;
-    const msgRes = await axios.get(`${API_URL}/messages/${msgId}`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
+    const msgId = res.data[0].id;
+    
+    // 2. Read Message
+    const msgRes = await axios.get(`${API_URL}?action=readMessage&login=${login}&domain=${domain}&id=${msgId}`, botConfig);
+    const m = msgRes.data;
 
-    const fullMsg = msgRes.data;
-    const responseText = `📬 *New Mail!* \n\n👤 *From:* ${fullMsg.from.address}\n📝 *Subject:* ${fullMsg.subject}\n\n💬 *Message:* \n${fullMsg.intro || fullMsg.text}`;
-
-    ctx.reply(responseText.substring(0, 4000), { parse_mode: 'Markdown' });
-    ctx.answerCbQuery();
+    const text = `📬 *New Message!* \n\n👤 *From:* ${m.from}\n📝 *Subject:* ${m.subject}\n\n💬 *Message:* \n${m.textBody || 'No text content'}`;
+    
+    await ctx.reply(text.substring(0, 4000), { parse_mode: 'Markdown' });
+    ctx.answerCbQuery("Success!");
 
   } catch (error) {
-    console.error(error);
-    ctx.answerCbQuery("⚠️ Error fetching mail.", { show_alert: true });
+    ctx.answerCbQuery("⚠️ Server busy. Tap again.", { show_alert: false });
   }
 });
 
-// Nhost Export
+// Nhost Function Export
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
       await bot.handleUpdate(req.body);
       res.status(200).send('OK');
     } catch (err) {
-      res.status(500).send('Error');
+      res.status(200).send('Handled'); // Always send 200 to Telegram
     }
   } else {
-    res.status(200).send('Mail.tm Bot is Active! 🚀');
+    res.status(200).send('Bot Active!');
   }
 };
