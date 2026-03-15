@@ -1,91 +1,88 @@
 const { Telegraf } = require('telegraf');
 const axios = require('axios');
 
-// Nhost-ல் நீங்கள் செட் செய்த BOT_TOKEN-ஐ எடுத்துக்கொள்ளும்
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const API_URL = 'https://www.1secmail.com/api/v1/';
-
-// 1secmail 403 Forbidden எரர் வராமல் இருக்க இந்த Headers அவசியம்
-const axiosConfig = {
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Accept': 'application/json'
-  }
-};
+const API_URL = 'https://api.mail.tm';
 
 // --- BOT LOGIC ---
 
-// Start Command
 bot.start((ctx) => {
-  const message = `🚀 *Welcome to Quick Gmail Bot!*\n\nI can generate temporary email addresses for you.\n\nUse /generate command to get a new email.`;
-  ctx.replyWithMarkdown(message);
+  ctx.reply("✨ *Quick Gmail Bot (Mail.tm Edition)* \n\nUse /generate to get a high-speed temp mail.", { parse_mode: 'Markdown' });
 });
 
-// Generate Email Command
 bot.command('generate', async (ctx) => {
-  const domains = ["1secmail.com", "1secmail.net", "1secmail.org"];
-  const domain = domains[Math.floor(Math.random() * domains.length)];
-  const login = Math.random().toString(36).substring(2, 10);
-  const email = `${login}@${domain}`;
+  try {
+    // 1. Get Domain
+    const domainRes = await axios.get(`${API_URL}/domains`);
+    const domain = domainRes.data['hydra:member'][0].domain;
 
-  ctx.reply(`📧 *Your Temporary Email:* \n\`${email}\` \n\n_Send your email and then click the button below to check your inbox._`, {
-    parse_mode: 'Markdown',
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: "📥 Refresh / Check Inbox", callback_data: `check_${email}` }]
-      ]
-    }
-  });
+    // 2. Create Random Email and Password
+    const login = Math.random().toString(36).substring(2, 10);
+    const password = Math.random().toString(36).substring(2, 12);
+    const email = `${login}@${domain}`;
+
+    // 3. Register the Account on Mail.tm
+    await axios.post(`${API_URL}/accounts`, { address: email, password: password });
+
+    // 4. Get Token (Login)
+    const tokenRes = await axios.post(`${API_URL}/token`, { address: email, password: password });
+    const token = tokenRes.data.token;
+
+    ctx.reply(`📧 *Your Temp Mail:* \n\`${email}\` \n\n_Click the button below to check your inbox._`, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[{ text: "📥 Check Inbox", callback_data: `check_${token}` }]]
+      }
+    });
+  } catch (error) {
+    console.error(error);
+    ctx.reply("⚠️ Error generating mail. Please try again.");
+  }
 });
 
-// Check Inbox Logic (Callback Query)
 bot.on('callback_query', async (ctx) => {
-  const emailData = ctx.callbackQuery.data.split('_')[1];
-  const [login, domain] = emailData.split('@');
+  const token = ctx.callbackQuery.data.split('_')[1];
 
   try {
-    // 1. மெசேஜ் லிஸ்ட்டை எடுக்கிறோம்
-    const res = await axios.get(`${API_URL}?action=getMessages&login=${login}&domain=${domain}`, axiosConfig);
-    
-    if (!res.data || res.data.length === 0) {
-      return ctx.answerCbQuery("❌ Inbox is empty! Send a mail and wait 5 seconds.", { show_alert: true });
+    // 1. Fetch Messages using the Token
+    const res = await axios.get(`${API_URL}/messages`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+
+    const messages = res.data['hydra:member'];
+
+    if (messages.length === 0) {
+      return ctx.answerCbQuery("❌ Inbox is empty!", { show_alert: true });
     }
 
-    // 2. லேட்டஸ்ட் மெசேஜின் ID-ஐ எடுக்கிறோம்
-    const latestMsg = res.data[0];
-    const msgId = latestMsg.id;
-    
-    // 3. அந்த குறிப்பிட்ட மெசேஜை படிக்கிறோம்
-    const contentRes = await axios.get(`${API_URL}?action=readMessage&login=${login}&domain=${domain}&id=${msgId}`, axiosConfig);
-    const fullMsg = contentRes.data;
+    // 2. Get the latest message content
+    const msgId = messages[0].id;
+    const msgRes = await axios.get(`${API_URL}/messages/${msgId}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
 
-    const responseText = `📬 *New Message Found!* \n\n` +
-                         `👤 *From:* ${fullMsg.from} \n` +
-                         `📝 *Subject:* ${fullMsg.subject || '(No Subject)'} \n` +
-                         `📅 *Date:* ${fullMsg.date} \n\n` +
-                         `💬 *Message:* \n\n${fullMsg.textBody || 'No text content.'}`;
+    const fullMsg = msgRes.data;
+    const responseText = `📬 *New Mail!* \n\n👤 *From:* ${fullMsg.from.address}\n📝 *Subject:* ${fullMsg.subject}\n\n💬 *Message:* \n${fullMsg.intro || fullMsg.text}`;
 
-    // மெசேஜ் நீளமாக இருந்தால் டெலிகிராம் லிமிட்க்காக சுருக்குகிறோம்
     ctx.reply(responseText.substring(0, 4000), { parse_mode: 'Markdown' });
     ctx.answerCbQuery();
 
   } catch (error) {
-    console.error("API Error:", error.message);
-    ctx.answerCbQuery("⚠️ 1secmail server busy. Please try clicking again.", { show_alert: true });
+    console.error(error);
+    ctx.answerCbQuery("⚠️ Error fetching mail.", { show_alert: true });
   }
 });
 
-// Nhost Function Export (Webhook handler)
+// Nhost Export
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
       await bot.handleUpdate(req.body);
       res.status(200).send('OK');
     } catch (err) {
-      console.error("Webhook Update Error:", err);
       res.status(500).send('Error');
     }
   } else {
-    res.status(200).send('Quick Gmail Bot is Active and Running! 🚀');
+    res.status(200).send('Mail.tm Bot is Active! 🚀');
   }
 };
